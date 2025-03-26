@@ -1,0 +1,299 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <script src="/socket.io/socket.io.js"></script>
+    <title>Responsive Chat & Video Call</title>
+
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            background-color: aqua;
+            font-family: Arial, sans-serif;
+        }
+
+        #container {
+            text-align: center;
+            height: 100vh;
+            width: 100%;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            padding: 10px;
+        }
+
+        #messages {
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+            align-items: flex-start;
+            width: 100%;
+            max-width: 600px;
+            height: 60vh;
+            overflow-y: auto;
+            padding: 10px;
+            background-color: #f9f9f9;
+            border: 1px solid #ccc;
+            border-radius: 8px;
+            margin-bottom: 20px;
+        }
+
+        textarea {
+            width: 90%;
+            max-width: 600px;
+            padding: 10px;
+            line-height: 1.5;
+            font-size: 18px;
+            border: 1px solid #ccc;
+            border-radius: 5px;
+        }
+
+        button {
+            background-color: transparent;
+            height: 40px;
+            width: 100px;
+            border: 1px solid black;
+            border-radius: 5px;
+            margin-top: 10px;
+            cursor: pointer;
+        }
+
+        #videoContainer {
+            display: flex;
+            justify-content: center;
+            gap: 10px;
+            margin-top: 20px;
+            flex-wrap: wrap;
+        }
+
+        video {
+            width: 100%;
+            max-width: 300px;
+            height: auto;
+            border: 2px solid;
+            border-radius: 10px;
+        }
+
+        #endCall,
+        #answerCall {
+            background-color: red;
+            color: white;
+            display: none;
+            padding: 5px 10px;
+            border-radius: 5px;
+        }
+
+        #startCall {
+            background-color: green;
+            color: white;
+            padding: 5px 10px;
+            border-radius: 5px;
+        }
+
+        @media (max-width: 768px) {
+            #messages {
+                max-width: 95%;
+                height: 50vh;
+            }
+
+            textarea {
+                width: 100%;
+            }
+
+            button {
+                width: 100px;
+            }
+
+            #videoContainer {
+                flex-direction: column;
+                align-items: center;
+            }
+
+            video {
+                width: 90%;
+            }
+        }
+    </style>
+</head>
+
+<body>
+
+    <div id="container">
+        <h1 style="text-align: center; font-style: italic;">Chat Box</h1>
+
+        <div id="messages"></div>
+
+        <textarea id="msg" rows="3" placeholder="Write a message"></textarea>
+        <button onclick="sendMessage()">Send</button>
+
+        <!-- Video Call -->
+        <div id="videoContainer" style="display: none;">
+            <video id="localVideo" autoplay playsinline muted></video>
+            <video id="remoteVideo" autoplay playsinline></video>
+            <button id="endCall" onclick="endCall()">End Call</button>
+        </div>
+
+        <button id="startCall" onclick="startCall()">Start Video Call</button>
+        <button id="answerCall" onclick="answerCall()" style="display: none;">Answer Call</button>
+    </div>
+
+    <script>
+        const socket = io();
+        let localStream;
+        let peerConnection;
+        let incomingOffer;
+
+        const servers = {
+            iceServers: [{ urls: "stun:stun1.l.google.com:19302" }]
+        };
+
+        // Emit findPartner event when page loads
+        window.onload = () => {
+            socket.emit("findPartner");
+        };
+
+        // Send chat message
+        function sendMessage() {
+            const message = document.getElementById("msg").value.trim();
+            if (message !== "") {
+                socket.emit("chatMessage", { message, sender: socket.id });
+                document.getElementById("msg").value = "";
+            }
+        }
+
+        // Show message in chat
+        function showMessage(message, person) {
+            const time = new Date().toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", hour12: true });
+
+            const newTime = document.createElement("p");
+            newTime.textContent = time;
+            newTime.style.color = "black";
+            newTime.style.fontSize = "12px";
+            newTime.style.textAlign = person === "you" ? "right" : "left";
+
+            const newMsg = document.createElement("p");
+            newMsg.textContent = message;
+            newMsg.style.margin = "5px 0";
+            newMsg.style.color = person === "system" ? "blue" : "black";
+            newMsg.style.fontStyle = person === "system" ? "italic" : "normal";
+
+            const div = document.createElement("div");
+            div.style.display = "flex";
+            div.style.flexDirection = "column";
+            div.style.alignItems = person === "you" ? "flex-end" : "flex-start";
+            div.style.backgroundColor = person === "you" ? "orange" : person === "system" ? "#f0f0f0" : "pink";
+            div.style.borderRadius = "10px";
+            div.style.padding = "8px";
+            div.style.maxWidth = "300px";
+
+            div.appendChild(newMsg);
+            div.appendChild(newTime);
+            document.getElementById("messages").appendChild(div);
+            document.getElementById("messages").scrollTop = document.getElementById("messages").scrollHeight;
+        }
+
+        // Handle chatMessage event
+        socket.on("chatMessage", (data) => {
+            const person = data.sender === socket.id ? "you" : data.sender === "system" ? "system" : "partner";
+            showMessage(data.message, person);
+        });
+
+        // Partner connected, clear previous messages
+        socket.on("connected", (data) => {
+            document.getElementById("messages").innerHTML = "";
+            showMessage(data, "system");
+        });
+
+        // Partner disconnected
+        socket.on("disconnect", () => {
+            showMessage("⚠️ Your current chat partner disconnected. Waiting to find a new partner...", "system");
+            socket.emit("findPartner"); // Search for a new partner
+        });
+
+        // Video Call Logic
+        async function startCall() {
+            document.getElementById("videoContainer").style.display = "block";
+            document.getElementById("startCall").style.display = "none";
+            document.getElementById("endCall").style.display = "inline-block";
+
+            localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+            document.getElementById("localVideo").srcObject = localStream;
+
+            peerConnection = new RTCPeerConnection(servers);
+            localStream.getTracks().forEach(track => peerConnection.addTrack(track, localStream));
+
+            peerConnection.ontrack = event => document.getElementById("remoteVideo").srcObject = event.streams[0];
+
+            peerConnection.onicecandidate = event => {
+                if (event.candidate) {
+                    socket.emit("iceCandidate", event.candidate);
+                }
+            };
+
+            const offer = await peerConnection.createOffer();
+            await peerConnection.setLocalDescription(offer);
+            socket.emit("offer", offer);
+        }
+
+        socket.on("offer", (offer) => {
+            incomingOffer = offer;
+            document.getElementById("answerCall").style.display = "inline-block"; // Show answer button
+        });
+
+        async function answerCall() {
+            document.getElementById("videoContainer").style.display = "block";
+            document.getElementById("answerCall").style.display = "none";
+            document.getElementById("endCall").style.display = "inline-block";
+
+            localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+            document.getElementById("localVideo").srcObject = localStream;
+
+            peerConnection = new RTCPeerConnection(servers);
+            localStream.getTracks().forEach(track => peerConnection.addTrack(track, localStream));
+
+            peerConnection.ontrack = event => document.getElementById("remoteVideo").srcObject = event.streams[0];
+
+            peerConnection.onicecandidate = event => {
+                if (event.candidate) {
+                    socket.emit("iceCandidate", event.candidate);
+                }
+            };
+
+            await peerConnection.setRemoteDescription(new RTCSessionDescription(incomingOffer));
+            const answer = await peerConnection.createAnswer();
+            await peerConnection.setLocalDescription(answer);
+            socket.emit("answer", answer);
+        }
+
+        socket.on("answer", async (answer) => {
+            await peerConnection.setRemoteDescription(new RTCSessionDescription(answer));
+        });
+
+        socket.on("iceCandidate", async (candidate) => {
+            if (candidate) {
+                await peerConnection.addIceCandidate(new RTCIceCandidate(candidate));
+            }
+        });
+
+        function endCall() {
+            if (peerConnection) {
+                peerConnection.close();
+                peerConnection = null;
+            }
+            document.getElementById("videoContainer").style.display = "none";
+            document.getElementById("startCall").style.display = "inline-block";
+            document.getElementById("endCall").style.display = "none";
+            socket.emit("endCall");
+        }
+
+        socket.on("endCall", () => {
+            endCall();
+        });
+    </script>
+</body>
+
+</html>
